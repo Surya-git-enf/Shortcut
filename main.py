@@ -1,10 +1,9 @@
 import os
 import json
-import boto3
 import subprocess
 from datetime import datetime, timezone
-from typing import Optional, List
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Header
+from typing import Optional
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from supabase import create_client, Client
 from google import genai
@@ -19,13 +18,7 @@ supabase: Client = create_client(supabase_url, supabase_key)
 
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.environ.get("AWS_REGION", "us-east-1"),
-)
-BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "shortcut-videos")
+BUCKET_NAME = "shortcut-videos"
 
 # ----------------- PROMPTS -----------------
 
@@ -138,15 +131,23 @@ def process_video_edit_pipeline(user_id: str, project_name: str, template: str, 
         
         cuts = json.loads(ai_response.text)
         
-        # 3. Render MP4 Locally & Upload
+        # 3. Render MP4 Locally
         local_output = f"/tmp/{project_name}_render.mp4"
         run_ffmpeg_timeline_cut(cuts, video_url, audio_url, local_output)
         
-        s3_key = f"renders/{user_id}/{project_name}.mp4"
-        s3_client.upload_file(local_output, BUCKET_NAME, s3_key)
-        render_url = f"https://{BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
+        # 4. Upload Render Directly to Supabase Storage
+        storage_path = f"renders/{user_id}/{project_name}.mp4"
+        with open(local_output, "rb") as f:
+            supabase.storage.from_(BUCKET_NAME).upload(
+                file=f,
+                path=storage_path,
+                file_options={"content-type": "video/mp4", "upsert": "true"}
+            )
         
-        # 4. Update Database
+        # Get Public URL from Supabase
+        render_url = supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
+        
+        # 5. Update Supabase Database
         user = get_user_record(user_id)
         projects = user.get("projects", {})
         
@@ -165,6 +166,10 @@ def process_video_edit_pipeline(user_id: str, project_name: str, template: str, 
             })
             update_user_projects(user_id, projects)
             
+        # Clean local temp file
+        if os.path.exists(local_output):
+            os.remove(local_output)
+
     except Exception as e:
         user = get_user_record(user_id)
         projects = user.get("projects", {})
@@ -276,9 +281,4 @@ async def get_project_status(user_id: str, project_name: str):
     if project_name not in projects:
         raise HTTPException(status_code=404, detail="Project not found")
     return projects[project_name]
-
-
-
-
-
-
+    
