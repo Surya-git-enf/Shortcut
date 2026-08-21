@@ -3,6 +3,5 @@ uvicorn
 pydantic
 google-genai
 supabase
-faster-whisper
 python-multipart
 requests
