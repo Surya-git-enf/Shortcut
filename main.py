@@ -70,13 +70,30 @@ class ChatMessageRequest(BaseModel):
 
 # ----------------- HELPERS -----------------
 
-def download_file(url: str, dest_path: str):
-    response = requests.get(url, stream=True, timeout=120)
-    response.raise_for_status()
-    with open(dest_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=16384):
-            f.write(chunk)
-
+def download_file(url_or_path: str, dest_path: str):
+    """
+    Downloads media directly using Supabase SDK if it's a Supabase URL or filename,
+    otherwise falls back to authenticated HTTP request.
+    """
+    # If the URL is from our Supabase bucket, extract the internal file path
+    if f"storage/v1/object/public/{BUCKET_NAME}/" in url_or_path:
+        file_path = url_or_path.split(f"storage/v1/object/public/{BUCKET_NAME}/")[-1]
+        with open(dest_path, "wb+") as f:
+            res = supabase.storage.from_(BUCKET_NAME).download(file_path)
+            f.write(res)
+    elif url_or_path.endswith(".mp4") or url_or_path.endswith(".mp3"):
+        # Handle case where only the file name was provided
+        with open(dest_path, "wb+") as f:
+            res = supabase.storage.from_(BUCKET_NAME).download(url_or_path)
+            f.write(res)
+    else:
+        # Generic HTTP download with Supabase authorization header fallback
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+        response = requests.get(url_or_path, headers=headers, stream=True, timeout=120)
+        response.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=16384):
+                f.write(chunk)
 def get_user_record(user_id: str) -> dict:
     response = supabase.table("users").select("*").eq("id", user_id).execute()
     if not response.data or len(response.data) == 0:
